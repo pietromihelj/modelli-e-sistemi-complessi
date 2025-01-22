@@ -402,7 +402,7 @@ class NeuronModel:
                         solution[idx] = pre_state + s * (post_state - pre_state)
             
             # Update index
-            current_idx = next_idx + 1
+            dA = next_idx + 1
         
         # Simulate the remaining time after the last perturbation
         if current_idx < n_points:
