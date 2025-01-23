@@ -326,3 +326,266 @@ Vk = -77.0
 Vl = -54.4
 V0 = -65
 Ie = [(10, 100, 50), (-5, 200, 50), (15, 300, 100), (-10, 400, 50)]
+
+
+#### secondo salvataggio ####
+import numpy as np
+from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from scipy.optimize import fsolve
+import itertools as it
+from scipy.signal import find_peaks
+
+def alpha_m(v): return np.where(np.abs(25 - v) < 1e-9, 1.0, (0.1 * (25 - v)) / (np.exp(np.clip((25 - v) / 10, -700, 700)) - 1))
+def alpha_h(v): return 0.07 * np.exp(np.clip(-v / 20, -700, 700))
+def alpha_n(v): return np.where(np.abs(10 - v) < 1e-9, 0.1, (0.01 * (10 - v)) / (np.exp(np.clip((10 - v) / 10, -700, 700)) - 1))
+
+def beta_m(v): return 4 * np.exp(np.clip(-v / 18, -700, 700))
+def beta_h(v): return 1 / (1 + np.exp(np.clip((30 - v) / 10, -700, 700)))
+def beta_n(v): return 0.125 * np.exp(np.clip(-v / 80, -700, 700))
+
+def m_inf(V): return alpha_m(V) / (alpha_m(V) + beta_m(V))
+def h_inf(V): return alpha_h(V) / (alpha_h(V) + beta_h(V))
+def n_inf(V): return alpha_n(V) / (alpha_n(V) + beta_n(V))
+
+def I_Na(V,m,h,g_Na,ENa): return g_Na * m**3 * h * (V - ENa)
+def I_K(V,n,g_K,Ek): return g_K * n**4 * (V - Ek)
+def I_L(V,g_L,El): return g_L * (V - El)
+
+def Id(t,Ie):
+    if isinstance(Ie,list):
+        return sum(valore * (t_start <= t < t_start + durata) for valore, t_start, durata in Ie)
+    else:
+        return Ie
+
+def neuron(t,y,Cm,GNa,Gk,Gl,ENa,Ek,El,Ie):
+    V,m,h,n= y
+    dV_dt = (Id(t,Ie)-I_Na(V,m,h,GNa,ENa)-I_K(V,n,Gk,Ek)-I_L(V,Gl,El))/Cm
+    dm_dt = alpha_m(V)*(1-m)-beta_m(V)*m
+    dh_dt = alpha_h(V)*(1-h)-beta_h(V)*h
+    dn_dt = alpha_n(V)*(1-n)-beta_n(V)*n
+    return [dV_dt, dm_dt, dh_dt, dn_dt]
+
+def system_simulator(V0,T,n_p,Cm,Gna,Gk,Gl,Vna,Vk,Vl,Ie):
+    t_span = (0,T)
+    t_eval = np.linspace(0,T,n_p)
+    m0 = alpha_m(V0) / (alpha_m(V0) + beta_m(V0))
+    h0 = alpha_h(V0) / (alpha_h(V0) + beta_h(V0))
+    n0 = alpha_n(V0) / (alpha_n(V0) + beta_n(V0))
+    y0 = [V0,m0,h0,n0]
+    return solve_ivp(neuron, t_span, y0, args=(Cm,Gna,Gk,Gl,Vna,Vk,Vl,Ie),t_eval = t_eval)
+
+def find_eqs_ponts(V0,Cm,GNa,ENa,Gk,Ek,Gl,El,Ie):
+    def eq_equations(y0,Cm,GNa,ENa,Gk,Ek,Gl,El,Ie):
+        V,m,h,n = y0
+        dV_dt = (Ie-I_Na(V,m,h,GNa,ENa)-I_K(V,n,Gk,Ek)-I_L(V,Gl,El))/Cm
+        dm_dt = alpha_m(V)*(1-m)-beta_m(V)*m
+        dh_dt = alpha_h(V)*(1-h)-beta_h(V)*h
+        dn_dt = alpha_n(V)*(1-n)-beta_n(V)*n
+        return [dV_dt, dm_dt, dh_dt, dn_dt]
+    
+    if not isinstance(V0,list):
+        V0 = [V0]
+    m0 = []
+    h0 = []
+    n0 = []
+    for V in V0:
+        m0.append(alpha_m(V)/(alpha_m(V) + beta_m(V)))
+        h0.append(alpha_h(V)/(alpha_h(V) + beta_h(V)))
+        n0.append(alpha_n(V)/(alpha_n(V) + beta_n(V)))
+
+    start_points = list(zip(V0,m0,h0,n0))
+    eqs_points = set()
+    for point in start_points:
+        sol, jac, ier, _ = fsolve(eq_equations, x0=point, args=(Cm,GNa,ENa,Gk,Ek,Gl,El,Ie), full_output=True)
+        if ier == 1:
+            eig = np.linalg.eigvals(jac['fjac'])
+            if np.all(np.real(eig) < 0):
+                eqs_points.add((tuple(np.round(sol, decimals=4)),point,'stable'))
+            else:
+                eqs_points.add((tuple(np.round(sol, decimals=4)),point,'unstable'))            
+    
+    eqs_points = sorted(eqs_points, key=lambda x: x[0][0])
+    return eqs_points
+
+def get_unstable_eqs(V0,Cm,GNa,ENa,Gk,Ek,Gl,El,Ie):
+    eqs= find_eqs_ponts(V0,Cm,GNa,ENa,Gk,Ek,Gl,El,Ie)
+    return [point[0] for point in eqs if point[2] == 'unstable']
+
+def get_stable_eqs(V0,Cm,GNa,ENa,Gk,Ek,Gl,El,Ie):
+    eqs= find_eqs_ponts(V0,Cm,GNa,ENa,Gk,Ek,Gl,El,Ie)
+    return [point[0] for point in eqs if point[2] == 'stable']
+
+def find_limit_cicles(V0,T,n_p,Cm,Gna,Gk,Gl,Vna,Vk,Vl,Ie):
+    steady_states_max = []  # Per salvare i picchi massimi
+    steady_states_min = []  # Per salvare i picchi minimi
+    # Risolvere il sistema per ogni valore di I_ext
+    for I_ext in Ie:
+        sol = system_simulator(V0,T,n_p,Cm,Gna,Gk,Gl,Vna,Vk,Vl,I_ext)
+        V = sol.y[0]  # Potenziale di membrana
+        peaks_max, _ = find_peaks(V)  # Picchi massimi
+        peaks_min, _ = find_peaks(-V)  # Picchi minimi
+        if peaks_max.size > 0:
+            steady_states_max.append((np.max(V[peaks_max]),I_ext))  # Picco massimo nel regime stazionario
+        else:
+            steady_states_max.append((np.max(V),I_ext))  # Stato stazionario massimo, se non oscillante
+        if peaks_min.size > 0:
+            steady_states_min.append((np.min(V[peaks_min]),I_ext))  # Picco minimo nel regime stazionario
+        else:
+            steady_states_min.append((np.min(V),I_ext))  # Stato stazionario minimo, se non oscillante
+    return steady_states_max, steady_states_min
+
+def time_plots(T,n_p,V0,Cm,Gna,Gk,Gl,Vna,Vk,Vl,Ie):
+    sol = system_simulator(V0,T,n_p,Cm,Gna,Gk,Gl,Vna,Vk,Vl,Ie)
+    V = sol.y[0]
+    m = sol.y[1]
+    h = sol.y[2]
+    n = sol.y[3]
+    t = sol.t
+
+    fig = plt.figure(figsize=(14, 7))
+    gs = gridspec.GridSpec(3, 2, width_ratios=[2, 1]) 
+    
+    ax1 = fig.add_subplot(gs[0, 1])  
+    ax1.plot(t, m, color='red', label='m ratio')
+    ax1.set_ylabel('m ratio')
+    ax1.legend(loc='upper right')
+    ax1.grid(True)
+
+    ax2 = fig.add_subplot(gs[1, 1])  
+    ax2.plot(t, h, color='blue', label='h ratio')
+    ax2.set_ylabel('h ratio')
+    ax2.legend(loc='upper right')
+    ax2.grid(True)
+
+    ax3 = fig.add_subplot(gs[2, 1])  
+    ax3.plot(t, n, color='green', label='n ratio')
+    ax3.set_xlabel('Tempo (ms)')
+    ax3.set_ylabel('n ratio')
+    ax3.legend(loc='upper right')
+    ax3.grid(True)
+
+    ax4 = fig.add_subplot(gs[:,0])
+    ax4.plot(t,V)
+    ax4.set_xlabel('Tempo (ms)')
+    ax4.set_ylabel('Voltaggio (mV)')
+    ax4.grid(True)
+
+def phase_plots(T,n_p,V0,Cm,GNa,Gk,Gl,ENa,Ek,El,Ie):
+    sol = system_simulator(V0,T,n_p,Cm,GNa,Gk,Gl,ENa,Ek,El,Ie)
+    V = sol.y[0]
+    m = sol.y[1]
+    h = sol.y[2]
+    n = sol.y[3]
+
+    eqs = find_eqs_ponts(V0,Cm,GNa,ENa,Gk,Ek,Gl,El,Ie)
+
+    fig = plt.figure(figsize=(7,7))
+    gs = gridspec.GridSpec(3,1)
+
+    ax1 = fig.add_subplot(gs[0,0])  
+    ax1.plot(V, m, color='red', label='m ratio')
+    ax1.plot()
+    ax1.set_ylabel('gate opening ratio')
+    ax1.legend(loc='upper right')
+    ax1.grid(True)
+
+    ax2 = fig.add_subplot(gs[1, 0])  
+    ax2.plot(V, h, color='blue', label='h ratio')
+    ax2.set_ylabel('h ratio')
+    ax2.legend(loc='upper right')
+    ax2.grid(True)
+
+    ax3 = fig.add_subplot(gs[2, 0])  
+    ax3.plot(V, n, color='green', label='n ratio')
+    ax3.set_xlabel('Voltaggio di membrana (mV)')
+    ax3.set_ylabel('n ratio')
+    ax3.legend(loc='upper right')
+    ax3.grid(True)
+
+def equilibrium_plot_V_Ie(V0,Cm,Gna,ENa,Gk,Ek,Gl,El,Ie_list):
+    eqs_list = []
+    for Ie in Ie_list:
+        eqs = find_eqs_ponts(V0,Cm,Gna,ENa,Gk,Ek,Gl,El,Ie)
+        eqs_list.append([eqs,Ie])
+    stable_Ie = []
+    unstable_Ie = []
+    stable_V = []
+    unstable_V = []
+    for eqs,Ie in eqs_list:
+        for point in eqs:
+            if point[2] == 'stable':
+                stable_V.append(point[0][1])
+                stable_Ie.append(Ie)
+            elif point[2] == 'unstable':
+                unstable_V.append(point[0][1])
+                unstable_Ie.append(Ie)   
+     
+    plt.figure(figsize=(14,7))
+    plt.scatter(unstable_Ie, unstable_V, s=3, label = 'unstable', color = 'blue')
+    plt.scatter(stable_Ie, stable_V, s=3, label = 'stable', color = 'red')
+    plt.xlabel('corrente esterna')
+    plt.ylabel('Voltaggio (mV)')
+    plt.legend(fontsize = '10')
+    plt.grid()
+
+Cm = 1
+Gna = 120
+Gk = 120
+Gl = 0.3
+ENa = 50
+Ek = -77.0
+El = -54.4
+Ie = 7
+V0 = -65.0
+T = 1000
+n_p = 10000
+
+time_plots(100,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
+phase_plots(T,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
+
+Cm = 1
+Gna = 120
+Gk = 36
+Gl = 0.3
+ENa = 50
+Ek = -77
+El = -54.4
+Ie = [(6,5,10)]
+V0 = -65.0
+T = 1000
+n_p = 10000
+
+time_plots(100,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
+phase_plots(T,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
+
+Cm = 1
+Gna = 120
+Gk = 36
+Gl = 0.3
+ENa = 115
+Ek = -12
+El = -10.4
+Ie = [(6,0,10)]
+V0 = -65.0
+T = 1000
+n_p = 10000
+
+time_plots(100,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
+phase_plots(T,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
+
+Cm = 1
+Gna = 115
+Gk = 36
+Gl = 0.1
+ENa = 115
+Ek = -12
+El = -10.6
+Ie = 10
+V0 = -65.0
+T = 1000
+n_p = 10000
+
+time_plots(100,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
+phase_plots(T,n_p,V0,Cm,Gna,Gk,Gl,ENa,Ek,El,Ie)
