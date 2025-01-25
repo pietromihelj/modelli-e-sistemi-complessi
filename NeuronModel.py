@@ -629,8 +629,6 @@ class NeuronModel:
         return solution[last_cycle_start:last_cycle_end, 0], solution[last_cycle_start:last_cycle_end, 1]
 
 
-        
-
     def get_stable_equlibrium_location(self, I_ext):
         equlibria = self.find_equlibrium_points(I_ext, [-90, 20])
         stable_eq = [eq for eq in equlibria if eq['stability'] == 'stable'][0]
